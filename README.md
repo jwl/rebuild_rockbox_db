@@ -153,6 +153,38 @@ environment override. Every command below is prefixed with
 instead of your real home. This is optional — drop it if you'd rather it live in
 `~/.ddm` — but be consistent, because the mount notation is stored there.
 
+### Shell compatibility
+
+Every snippet in this file is written to run unmodified in **fish, zsh, bash, or
+plain POSIX sh**, despite being tagged ```` ```bash ```` for syntax highlighting.
+Verified under fish 4.8.1 on 2026-08-07.
+
+This is deliberate, not luck. Preserve it when editing. The rules:
+
+- **Set environment variables with `env VAR=value cmd`, never a bare
+  `VAR=value cmd` prefix.** `env` is an external command, so it behaves
+  identically everywhere. The bare prefix is a POSIX shell feature that fish only
+  gained in 3.1.
+- **Never use `export`.** Fish spells it `set -x`. Use the `env` prefix instead.
+- **No `( cmd )` subshells.** Fish parses `(` in command position as command
+  substitution and errors out with *"command substitutions not allowed in command
+  position"*. Where you would reach for `(cd somewhere && cmd)` to avoid changing
+  directory, just give `cmd` an absolute path instead.
+- **No `$(...)`, `` `...` ``, `$?`, `[[ ]]`, heredocs, `for`/`if`/`while`, arrays,
+  or `${var:-default}`.** Fish either lacks these or spells them differently. If a
+  step ever needs real control flow, put it in a `.py` file next to
+  `check_path_lengths.py` rather than inlining shell.
+
+Two things that *look* like portability hazards here and are not:
+
+- `'/<microSD0>'` — fish treats `<` as input redirection, but only when
+  unquoted. Inside single quotes it is a literal, and the argument arrives
+  intact.
+- `grep -A2 '\[database\]'` — fish honors only `\'` and `\\` as escapes inside
+  single quotes, so `\[` passes through untouched, exactly as in bash.
+
+Both are safe *because* they are quoted. Keep the quotes.
+
 ---
 
 ## Step 2: Back up the current database
@@ -335,10 +367,19 @@ sync
 Confirm the copy landed intact:
 
 ```bash
-md5sum testdb/*.tcd | awk '{print $1}' | sort > /tmp/src.md5
-(cd /run/media/jobias/JOYEUSE/.rockbox && md5sum *.tcd) | awk '{print $1}' | sort > /tmp/dst.md5
+md5sum testdb/*.tcd | awk '{n=split($2,p,"/"); print $1, p[n]}' | sort > /tmp/src.md5
+md5sum /run/media/jobias/JOYEUSE/.rockbox/*.tcd | awk '{n=split($2,p,"/"); print $1, p[n]}' | sort > /tmp/dst.md5
 diff /tmp/src.md5 /tmp/dst.md5 && echo "MATCH"
 ```
+
+The `awk` reduces each line to `hash basename`, so the two sides are compared
+per file by name rather than as an unordered bag of hashes — a file copied under
+the wrong name would still be caught.
+
+Expect `database_0.tcd` and `database_12.tcd` to share a hash. That is artist and
+canonicalartist being genuinely identical, not a bug. `database_7.tcd`
+(album artist) must be **distinct** from `database_0.tcd`; if it is not, you are
+looking at unpatched-tool output — see [patches/README.md](patches/README.md).
 
 Unmount properly, then boot the player. Because `default browser: database` is
 set in `config.cfg`, a bad database is obvious immediately on boot.
