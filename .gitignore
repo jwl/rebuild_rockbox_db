@@ -1,0 +1,22 @@
+# Virtualenv and the cloned upstream tool (see README Step 1)
+venv/
+DAP-DB-Manager/
+
+# ddm config, redirected here via the HOME override
+fakehome/
+
+# Generated databases and backups -- these are card data, not source
+testdb/
+tcd-backup/
+*.tcd
+
+# Tag caches from --save-tags / --load-tags.
+# Regenerable (one ~8 min cold run) and rewritten whenever music changes, so
+# tracking it would add a fresh ~630 KB binary blob to history each time.
+# Note --save-tags appends .gz, hence the second pattern.
+*.tagcache
+*.msgpack
+*.msgpack.gz
+
+__pycache__/
+*.pyc

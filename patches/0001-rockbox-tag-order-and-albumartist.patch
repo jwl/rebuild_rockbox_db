@@ -1,0 +1,205 @@
+diff --git a/src/dap_db_manager/constants.py b/src/dap_db_manager/constants.py
+index bbf6bc3..2ba2fe5 100644
+--- a/src/dap_db_manager/constants.py
++++ b/src/dap_db_manager/constants.py
+@@ -44,6 +44,53 @@ FORMATTED_TAGS = FILE_TAGS[:3] + FILE_TAGS[5:]
+ 
+ TAGS = FILE_TAGS + EMBEDDED_TAGS
+ 
++# Slot order of the 24 int32 values in an index entry, matching Rockbox's
++# enum tag_type exactly.
++#
++# This is deliberately NOT `FILE_TAGS + EMBEDDED_TAGS`. That concatenation puts
++# canonicalartist at slot 9 and pushes year/discnumber/tracknumber to 10/11/12,
++# but Rockbox reads year at 9, discnumber at 10, tracknumber at 11 and
++# canonicalartist at 12. Serialising in FILE_TAGS+EMBEDDED_TAGS order makes
++# Rockbox read the disc number as the track number (so albums lose their track
++# ordering and fall back to alphabetical) and the release year as the disc
++# number.
++#
++# FILE_TAGS still governs *which* tag files exist and their filenames via
++# FILE_TAG_INDICES; only the index-entry slot order is defined here.
++INDEX_ORDER = [
++    "artist",  # 0  tag_artist
++    "album",  # 1  tag_album
++    "genre",  # 2  tag_genre
++    "title",  # 3  tag_title
++    "path",  # 4  tag_filename
++    "composer",  # 5  tag_composer
++    "comment",  # 6  tag_comment
++    "album artist",  # 7  tag_albumartist
++    "grouping",  # 8  tag_grouping
++    "date",  # 9  tag_year
++    "discnumber",  # 10 tag_discnumber
++    "tracknumber",  # 11 tag_tracknumber
++    "canonicalartist",  # 12 tag_virt_canonicalartist
++    "bitrate",  # 13 tag_bitrate
++    "length",  # 14 tag_length
++    "playcount",  # 15 tag_playcount
++    "rating",  # 16 tag_rating
++    "playtime",  # 17 tag_playtime
++    "lastplayed",  # 18 tag_lastplayed
++    "commitid",  # 19 tag_commitid
++    "mtime",  # 20 tag_mtime
++    "lastelapsed",  # 21 tag_lastelapsed
++    "lastoffset",  # 22 tag_lastoffset
++    "flag",  # 23 index_entry.flag
++]
++
++# Same membership as TAGS, only reordered -- guard against drift.
++assert set(INDEX_ORDER) == set(TAGS), "INDEX_ORDER must cover exactly TAGS"
++assert len(INDEX_ORDER) == len(TAGS), "INDEX_ORDER must not duplicate fields"
++
++# Fields serialised as tag-file offsets rather than raw numbers.
++FILE_TAGS_SET = frozenset(FILE_TAGS)
++
+ # Index Entry Flag Definitions (from tagcache.c)
+ FLAG_DELETED = 0x0001  # Entry has been removed from db
+ FLAG_DIRCACHE = 0x0002  # Filename is a dircache pointer (memory only)
+diff --git a/src/dap_db_manager/database/cache.py b/src/dap_db_manager/database/cache.py
+index 27e6197..bf28332 100644
+--- a/src/dap_db_manager/database/cache.py
++++ b/src/dap_db_manager/database/cache.py
+@@ -226,7 +226,11 @@ class TagCache:
+             "bitrate",
+             "length",
+             "path",
+-            "albumartist",
++            # Registry key is "album artist" (with a space) -- see
++            # constants.FILE_TAGS and tagging/titleformat/field.py. Using
++            # "albumartist" here raises KeyError, silently dropping the field
++            # so %album artist% falls back to %artist%.
++            "album artist",
+             "performer",
+         ]
+ 
+@@ -317,7 +321,7 @@ class TagCache:
+                                 else tags
+                             )
+                             cls._cache[lowerpath] = ((size, mtime), restored_tags)  # type: ignore[assignment]
+-                            paths_set.add(lowerpath)
++                            paths_set.add(file_path)
+                 else:
+                     raise ImportError("msgpack not available")
+             except (
+@@ -360,7 +364,7 @@ class TagCache:
+                             else tags
+                         )
+                         cls._cache[lowerpath] = ((size, mtime), restored_tags)  # type: ignore[assignment]
+-                        paths_set.add(lowerpath)
++                        paths_set.add(file_path)
+ 
+                 # Recalculate memory usage after bulk load and trim if needed
+                 if cls._memory_tracking_enabled:
+@@ -390,8 +394,16 @@ class TagCache:
+         if not path.endswith(".gz"):
+             path = path + ".gz"
+ 
+-        # Only save paths that exist in tag_cache (some may have been trimmed)
+-        valid_paths = [p for p in paths_set if p in cls._cache]
++        # Only save paths that exist in tag_cache (some may have been trimmed).
++        # _cache is keyed on lowercased absolute paths (see _add_file_internal and
++        # read_single_file_tags), but paths_set holds them in original case, so the
++        # membership test must be case-folded. Without this, any path containing an
++        # uppercase character misses and --save-tags silently writes an empty cache.
++        #
++        # The saved record keeps the ORIGINAL case: paths_set is compared against
++        # directory-scan results, which are original-case. Writing the folded key
++        # here would make load() re-add lowercase duplicates of every file.
++        valid_paths = [p for p in paths_set if p.lower() in cls._cache]
+         missing_count = len(paths_set) - len(valid_paths)
+         if missing_count > 0:
+             logging.warning(
+@@ -411,7 +423,7 @@ class TagCache:
+                     if callback:
+                         callback(path_entry)
+                     # Extract essential tags only before packing
+-                    size_mtime, tags = cls._cache[path_entry]
++                    size_mtime, tags = cls._cache[path_entry.lower()]
+                     if not isinstance(tags, dict):  # type: ignore[unreachable]
+                         essential_tags = cls.extract_essential_tags(tags)
+                     else:
+@@ -425,7 +437,7 @@ class TagCache:
+                     if callback:
+                         callback(path_entry)
+                     # Extract essential tags only before pickling
+-                    size_mtime, tags = cls._cache[path_entry]
++                    size_mtime, tags = cls._cache[path_entry.lower()]
+                     if not isinstance(tags, dict):  # type: ignore[unreachable]
+                         essential_tags = cls.extract_essential_tags(tags)
+                     else:
+diff --git a/src/dap_db_manager/indexfile.py b/src/dap_db_manager/indexfile.py
+index a38583e..f6851d1 100644
+--- a/src/dap_db_manager/indexfile.py
++++ b/src/dap_db_manager/indexfile.py
+@@ -7,6 +7,8 @@ from .constants import (
+     TAGS,
+     FILE_TAGS,
+     EMBEDDED_TAGS,
++    INDEX_ORDER,
++    FILE_TAGS_SET,
+     SUPPORTED_VERSIONS,
+     FLAG_DELETED,
+     FLAG_DIRCACHE,
+@@ -210,17 +212,19 @@ class IndexEntry(dict):
+         return self.has_flag(FLAG_RESURRECTED)
+ 
+     def to_file(self, f):
+-        for field in FILE_TAGS:
+-            tagentry = self[field]
+-            assert isinstance(tagentry, TagEntry) and tagentry.offset is not None
+-            f.write(struct.pack("I", tagentry.offset))
+-
+-        for field in EMBEDDED_TAGS:
+-            value = self[field]
+-            # mtime needs to be converted from float back to FAT format integer
+-            if field == "mtime":
+-                value = mtime_to_fat(value)
+-            f.write(struct.pack("I", value))
++        # Slots must be written in Rockbox's enum tag_type order, which is not
++        # FILE_TAGS + EMBEDDED_TAGS order -- see constants.INDEX_ORDER.
++        for field in INDEX_ORDER:
++            if field in FILE_TAGS_SET:
++                tagentry = self[field]
++                assert isinstance(tagentry, TagEntry) and tagentry.offset is not None
++                f.write(struct.pack("I", tagentry.offset))
++            else:
++                value = self[field]
++                # mtime needs to be converted from float back to FAT format integer
++                if field == "mtime":
++                    value = mtime_to_fat(value)
++                f.write(struct.pack("I", value))
+ 
+     @staticmethod
+     def from_file(f, tagfiles):
+@@ -232,18 +236,19 @@ class IndexEntry(dict):
+         """
+ 
+         index_entry = IndexEntry()
+-        for field in FILE_TAGS:
+-            offset = struct.unpack("I", f.read(4))[0]
+-
+-            # Handle invalid or missing offsets gracefully
+-            if offset == 0 or offset not in tagfiles[field].offsets:
+-                # Create a placeholder entry for invalid/missing references
+-                index_entry[field] = TagEntry("<Invalid Reference>")
++        # Must mirror to_file(): read slots in Rockbox order, not
++        # FILE_TAGS + EMBEDDED_TAGS order. See constants.INDEX_ORDER.
++        for field in INDEX_ORDER:
++            value = struct.unpack("I", f.read(4))[0]
++            if field in FILE_TAGS_SET:
++                # Handle invalid or missing offsets gracefully
++                if value == 0 or value not in tagfiles[field].offsets:
++                    # Create a placeholder entry for invalid/missing references
++                    index_entry[field] = TagEntry("<Invalid Reference>")
++                else:
++                    index_entry[field] = tagfiles[field].offsets[value]
+             else:
+-                index_entry[field] = tagfiles[field].offsets[offset]
+-
+-        for field in EMBEDDED_TAGS:
+-            index_entry[field] = struct.unpack("I", f.read(4))[0]
++                index_entry[field] = value
+         index_entry.mtime = fat_to_mtime(index_entry.mtime)
+ 
+         return index_entry
