@@ -10,6 +10,46 @@ instead of on the device, and audit the library for paths that exceed Rockbox's
 
 ---
 
+# TL;DR - What to run when adding new music to an existing device with pre-warmed tag cache
+1. Sync contents of libraries using `FreeFileSync`
+2. Back-up existing database:
+```
+  mkdir -p tcd-backup
+  cp /run/media/jobias/JOYEUSE/.rockbox/*.tcd tcd-backup/
+```
+3. Verify path lengths:
+```
+  python3 check_path_lengths.py
+```
+4. Generate/Update database locally:
+```
+  mkdir -p testdb
+  env HOME="$PWD/fakehome" ./venv/bin/ddm generate \
+        --music-dir /run/media/jobias/JOYEUSE/Music \
+        --output "$PWD/testdb" \
+        --dap-root /run/media/jobias/JOYEUSE \
+        --load-tags "$PWD/tags.msgpack" \
+        --save-tags "$PWD/tags.msgpack" \
+        --no-parallel
+```
+5. Verify database integrity:
+```
+  env HOME="$PWD/fakehome" ./venv/bin/ddm validate --db-dir "$PWD/testdb"
+  python3 verify_db.py
+```
+6. Copy new database to device:
+```
+  cp testdb/*.tcd /run/media/jobias/JOYEUSE/.rockbox/
+  sync
+```
+7. Verify that copy was successful:
+```
+  md5sum testdb/*.tcd | awk '{n=split($2,p,"/"); print $1, p[n]}' | sort > /tmp/src.md5
+  md5sum /run/media/jobias/JOYEUSE/.rockbox/*.tcd | awk '{n=split($2,p,"/"); print $1, p[n]}' | sort > /tmp/dst.md5
+  diff /tmp/src.md5 /tmp/dst.md5 && echo "MATCH"
+```
+
+
 ## Why bother
 
 On-device "Initialize now" takes ~20 minutes. Generating on the PC took **7m54s**
